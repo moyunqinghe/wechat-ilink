@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wechat-ilink"
+version = "1.0.0"
+description = "Pure protocol layer for the Tencent WeChat iLink bot channel (QR login, long-poll getupdates, sendmessage, CDN media)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "httpx",
+    "cryptography",
+    "certifi",
+]
+
+[project.optional-dependencies]
+# Optional TLS fallback path for CDN nodes that reject httpx's handshake.
+aiohttp = ["aiohttp"]
+
+[tool.setuptools.packages.find]
+include = ["wechat_ilink*"]
