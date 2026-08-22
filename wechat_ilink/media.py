@@ -76,6 +76,67 @@ def encrypt_wechat_media(data: bytes, key: bytes) -> bytes:
         ) from exc
 
 
+_MEDIA_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _read_media_bytes(data: object) -> bytes:
+    """Normalize outbound media input to bounded plaintext bytes.
+
+    Accepts bytes-like objects or binary streams; streams are read from their
+    current position and are never closed. Rejects empty input and plaintext
+    larger than MAX_CHANNEL_MEDIA_BYTES.
+    """
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        result = bytes(data)
+        if not result:
+            raise WeChatMediaError(WeChatErrorCode.MEDIA_EMPTY, "read", "media is empty")
+        if len(result) > MAX_CHANNEL_MEDIA_BYTES:
+            raise WeChatMediaError(
+                WeChatErrorCode.MEDIA_TOO_LARGE,
+                "read",
+                f"media exceeds {MAX_CHANNEL_MEDIA_BYTES} bytes",
+            )
+        return result
+
+    read = getattr(data, "read", None)
+    if not callable(read):
+        raise WeChatMediaError(
+            WeChatErrorCode.INVALID_MEDIA_INPUT,
+            "read",
+            "expected bytes-like object or binary stream",
+        )
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        while True:
+            chunk = read(min(_MEDIA_READ_CHUNK_BYTES, MAX_CHANNEL_MEDIA_BYTES + 1 - total))
+            if not isinstance(chunk, (bytes, bytearray, memoryview)):
+                raise TypeError("binary stream read() must return bytes-like data")
+            if not chunk:
+                break
+            normalized = bytes(chunk)
+            total += len(normalized)
+            if total > MAX_CHANNEL_MEDIA_BYTES:
+                raise WeChatMediaError(
+                    WeChatErrorCode.MEDIA_TOO_LARGE,
+                    "read",
+                    f"media exceeds {MAX_CHANNEL_MEDIA_BYTES} bytes",
+                )
+            chunks.append(normalized)
+    except WeChatMediaError:
+        raise
+    except Exception as exc:
+        raise WeChatMediaError(
+            WeChatErrorCode.MEDIA_READ_FAILED,
+            "read",
+            "binary stream read failed",
+        ) from exc
+    result = b"".join(chunks)
+    if not result:
+        raise WeChatMediaError(WeChatErrorCode.MEDIA_EMPTY, "read", "media is empty")
+    return result
+
+
 def decrypt_wechat_media(data: bytes, aes_key: str, *, expected_size: int = 0) -> bytes:
     """Decrypt iLink CDN media using its fixed AES-ECB/PKCS#7 wire format."""
     if not aes_key:

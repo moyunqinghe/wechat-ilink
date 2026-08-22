@@ -87,3 +87,76 @@ def test_encrypt_wechat_media_rejects_non_128_bit_key() -> None:
         encrypt_wechat_media(b"data", b"short")
     assert raised.value.code is WeChatErrorCode.MEDIA_ENCRYPTION_FAILED
     assert raised.value.stage == "encrypt"
+
+
+from io import BytesIO, StringIO
+
+from wechat_ilink.media import MAX_CHANNEL_MEDIA_BYTES, _read_media_bytes
+
+
+@pytest.mark.parametrize(
+    "value",
+    [b"abc", bytearray(b"abc"), memoryview(b"abc")],
+)
+def test_read_media_bytes_accepts_bytes_like(value: object) -> None:
+    assert _read_media_bytes(value) == b"abc"
+
+
+def test_read_media_bytes_reads_from_current_position_without_closing() -> None:
+    stream = BytesIO(b"prefix-payload")
+    stream.seek(7)
+    assert _read_media_bytes(stream) == b"payload"
+    assert not stream.closed
+    assert stream.tell() == len(b"prefix-payload")
+
+
+class ChunkedStream:
+    def __init__(self) -> None:
+        self.parts = iter([b"ab", b"cd", b""])
+
+    def read(self, size: int = -1) -> bytes:
+        assert size > 0
+        return next(self.parts)
+
+
+def test_read_media_bytes_accepts_chunked_binary_stream() -> None:
+    assert _read_media_bytes(ChunkedStream()) == b"abcd"
+
+
+@pytest.mark.parametrize(
+    ("value", "code"),
+    [
+        (b"", WeChatErrorCode.MEDIA_EMPTY),
+        (object(), WeChatErrorCode.INVALID_MEDIA_INPUT),
+        (StringIO("text"), WeChatErrorCode.MEDIA_READ_FAILED),
+    ],
+)
+def test_read_media_bytes_rejects_invalid_input(
+    value: object,
+    code: WeChatErrorCode,
+) -> None:
+    with pytest.raises(WeChatMediaError) as raised:
+        _read_media_bytes(value)
+    assert raised.value.code is code
+
+
+class FailingStream:
+    def read(self, size: int = -1) -> bytes:
+        raise OSError("boom")
+
+
+def test_read_media_bytes_preserves_read_failure_as_cause() -> None:
+    with pytest.raises(WeChatMediaError) as raised:
+        _read_media_bytes(FailingStream())
+    assert raised.value.code is WeChatErrorCode.MEDIA_READ_FAILED
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_read_media_bytes_accepts_exact_limit() -> None:
+    assert len(_read_media_bytes(b"x" * MAX_CHANNEL_MEDIA_BYTES)) == MAX_CHANNEL_MEDIA_BYTES
+
+
+def test_read_media_bytes_rejects_one_byte_over_limit() -> None:
+    with pytest.raises(WeChatMediaError) as raised:
+        _read_media_bytes(b"x" * (MAX_CHANNEL_MEDIA_BYTES + 1))
+    assert raised.value.code is WeChatErrorCode.MEDIA_TOO_LARGE
