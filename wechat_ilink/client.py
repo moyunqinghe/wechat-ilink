@@ -24,7 +24,7 @@ from .security import validate_wechat_host
 
 logger = logging.getLogger(__name__)
 
-CHANNEL_VERSION = "1.0.0"
+CHANNEL_VERSION = "0.2.0"
 GETUPDATES_TIMEOUT_SECONDS = 40.0
 # errcode -14:会话疑似过期(token 被 iLink 拒收);调用方应走恢复/重新扫码流程
 SESSION_EXPIRED_ERRCODE = -14

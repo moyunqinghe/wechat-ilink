@@ -226,3 +226,7 @@ def test_client_accepts_separate_cdn_mock_transport() -> None:
     client = WeChatClient(BASE_URL, "token", transport=business, cdn_transport=cdn)
     assert client._cdn_client is not client._client
     client.close()
+
+
+def test_channel_version_is_v020() -> None:
+    assert CHANNEL_VERSION == "0.2.0"

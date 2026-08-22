@@ -1,8 +1,8 @@
 # wechat-ilink
 
 腾讯微信 **iLink** 机器人渠道的通用纯协议层封装,零业务/数据库耦合。
-覆盖:扫码登录、长轮询收消息(`getupdates`)、发送文本(`sendmessage`)、
-"正在输入"状态、CDN 媒体下载与解密。
+覆盖:扫码登录、长轮询收消息(`getupdates`)、发送文本/图片/普通文件
+(`sendmessage` + CDN 加密上传)、"正在输入"状态、CDN 媒体下载与解密。
 
 - 不依赖任何业务代码,不含数据库、不含渠道绑定模型——所有参数显式传入。
 - 依赖:`httpx`、`cryptography`、`certifi`。
@@ -14,13 +14,13 @@
 
 ```bash
 # 在新项目中直接以本地路径安装
-pip install /path/to/channels/wechat
+pip install /path/to/wechat-ilink
 
 # 或以可编辑模式安装(调试用)
-pip install -e /path/to/channels/wechat
+pip install -e /path/to/wechat-ilink
 
 # 可选:启用 aiohttp 下载回退
-pip install "/path/to/channels/wechat[aiohttp]"
+pip install "/path/to/wechat-ilink[aiohttp]"
 ```
 
 ## 快速上手:扫码登录 → 长轮询收消息 → 回复
@@ -78,6 +78,40 @@ while True:
 > 注意:上面的 `while True` 只是最小示例,生产环境不能直接照搬。
 > 具体需要自己实现什么,见下一节。
 
+## 发送图片与普通文件
+
+```python
+from io import BytesIO
+
+with WeChatClient(BASE_URL, bot_token) as client:
+    client.send_image(to_user_id, context_token, image_bytes)
+    client.send_file(
+        to_user_id,
+        context_token,
+        BytesIO(report_bytes),
+        "report.pdf",
+        client_id="delivery-42",
+    )
+```
+
+行为承诺与边界:
+
+- `data` 接受 bytes-like 对象(`bytes`/`bytearray`/`memoryview`)或二进制流;
+  流从当前位置读取,不 seek、不 rewind、不 close(不关闭调用方的流)。
+- 库绝不把 `filename` 解释为路径:不展开 `~`、不读同名本地文件,它仅是
+  协议展示字段;`filename` 去除首尾空白后必须非空。
+- 空媒体无效;明文超过 25 MiB 会在发出任何 HTTP 请求前失败
+  (`WeChatMediaError`,code 为 `media_empty` / `media_too_large`)。
+- 出错时抛出 `WeChatMediaError`,其 `.code`(`WeChatErrorCode`)与
+  `.stage` 是稳定的机器可读字段;iLink 业务 API 返回的非零 `ret/errcode`
+  仍抛 `WeChatApiError`,通过 `.errcode` 读取。
+- 出站流程为 `getuploadurl` → AES-128-ECB 加密 → CDN 上传 → `sendmessage`;
+  CDN 上传前校验 URL 为 HTTPS 且域名通过 `validate_wechat_host`,
+  且不向 CDN 携带 bot token。CDN 上传不自动重试,是否整体重投由调用方决定。
+- v0.2.0 不支持视频、原生语音、缩略图、caption 或批量附件。
+
+出站媒体协议适配自腾讯 MIT 开源项目 Tencent/openclaw-weixin,归属见 `NOTICE`。
+
 ## 本包的边界:使用方需要自己决定的事
 
 本包只负责"怎么跟微信说话"(协议层)。以下问题没有标准答案,
@@ -133,8 +167,10 @@ assert decrypt_secret(enc, key) == bot_token  # 使用时解密
 
 ### `wechat_ilink.client`
 
-- `WeChatClient(base_url, bot_token="", *, transport=None)` — iLink 端点的
-  同步 httpx 客户端;`transport` 可传 `httpx.MockTransport` 用于测试。
+- `WeChatClient(base_url, bot_token="", *, transport=None, cdn_transport=None, random_bytes=os.urandom)` — iLink 端点的
+  同步 httpx 客户端;`transport` 服务业务 API,`cdn_transport` 服务 CDN 上传
+  (缺省复用 `transport`),两者都可传 `httpx.MockTransport` 用于离线测试;
+  `random_bytes` 为出站媒体随机值(filekey/AES key)提供者。
   支持 `close()` 和 `with` 上下文管理。方法:
   - `get_bot_qrcode(local_token_list=None)` — 申请登录二维码
     (`bot_type=3`,最多携带 10 个本地 token)。
@@ -146,6 +182,11 @@ assert decrypt_secret(enc, key) == bot_token  # 使用时解密
   - `send_message(to_user_id, context_token, text, client_id="")` — 发送文本;
     `client_id` 为空时自动生成唯一值,用于服务端幂等去重。
     响应体带非零 errcode 时抛 `WeChatApiError`。
+  - `send_image(to_user_id, context_token, data, *, client_id="")` — 发送图片
+    (明文上限 25 MiB);成功返回 `None`,失败抛 `WeChatMediaError` /
+    `WeChatApiError`(见"发送图片与普通文件"一节)。
+  - `send_file(to_user_id, context_token, data, filename, *, client_id="")` —
+    发送普通文件;`filename` 仅为展示字段,不会被当作路径读取。
   - `get_config(ilink_user_id, context_token="")` — 获取配置,如 `typing_ticket`。
   - `send_typing(ilink_user_id, typing_ticket, status=1)` — 1 = 正在输入,2 = 取消。
   - `download_media(context_token, media_id)` — 通过业务 API 下载二进制媒体
@@ -174,6 +215,10 @@ assert decrypt_secret(enc, key) == bot_token  # 使用时解密
 
 - `decrypt_wechat_media(data, aes_key, *, expected_size=0)` — CDN 密文的
   AES-ECB/PKCS#7 解密(iLink 协议规定的线上格式,非通用加密)。
+- `encrypt_wechat_media(data, key)` — 出站媒体的 AES-128-ECB/PKCS#7 加密
+  (同为 iLink 线上格式,key 必须恰好 16 字节)。
+- `aes_ecb_padded_size(plaintext_size)` — PKCS#7 补位后的密文大小
+  (整块明文也会追加一个完整补位块)。
 - `download_media_url(...)` — httpx 主路径,可选 aiohttp,最后回退系统 curl;
   下载前先用 `validate_wechat_host` 校验域名。
 - `ensure_channel_media_size`、`MAX_CHANNEL_MEDIA_BYTES`(25 MiB)、
@@ -202,11 +247,17 @@ assert decrypt_secret(enc, key) == bot_token  # 使用时解密
 
 - `WeChatApiError(errcode, message)` — iLink 返回非零 errcode 或协议级媒体
   失败时抛出;`.errcode` 为数值错误码。
+- `WeChatMediaError(code, stage, message, *, status_code=None)` — 出站媒体
+  本地/协议错误;`.code`(`WeChatErrorCode`,稳定机器可读)与 `.stage`
+  (`"read" | "encrypt" | "getuploadurl" | "cdn_upload"`)为稳定字段,
+  `.status_code` 在 HTTP 层错误时给出状态码。人类可读消息不构成兼容承诺。
 
 ## 运行测试
 
 ```bash
-python -m pytest channels/wechat/tests
+PYTHONDONTWRITEBYTECODE=1 pytest -q -p no:cacheprovider
 ```
 
-全部测试离线运行:纯函数 + `httpx.MockTransport` 模拟 HTTP,不发真实网络请求。
+全部测试离线运行:纯函数 + `httpx.MockTransport` 模拟 HTTP,不发真实网络请求,
+也不需要扫码登录、微信账号或 bot token。真实微信联调是独立的可选人工活动,
+不属于自动化测试范围。

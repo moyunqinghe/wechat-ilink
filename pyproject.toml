@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wechat-ilink"
-version = "1.0.0"
+version = "0.2.0"
 description = "Pure protocol layer for the Tencent WeChat iLink bot channel (QR login, long-poll getupdates, sendmessage, CDN media)."
 readme = "README.md"
 requires-python = ">=3.11"
