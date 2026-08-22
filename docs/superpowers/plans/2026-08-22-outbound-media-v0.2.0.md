@@ -932,7 +932,7 @@ def test_send_image_runs_complete_protocol_and_sends_exact_payload() -> None:
             "image_item": {
                 "media": {
                     "encrypt_query_param": "download-image",
-                    "aes_key": b64encode(FIXED_AES_KEY).decode("ascii"),
+                    "aes_key": b64encode(FIXED_AES_KEY.hex().encode("ascii")).decode("ascii"),
                     "encrypt_type": 1,
                 },
                 "mid_size": len(ciphertext),
@@ -1042,7 +1042,7 @@ def send_image(
             "image_item": {
                 "media": {
                     "encrypt_query_param": download_param,
-                    "aes_key": base64.b64encode(aes_key).decode("ascii"),
+                    "aes_key": base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii"),
                     "encrypt_type": 1,
                 },
                 "mid_size": len(ciphertext),
@@ -1156,7 +1156,7 @@ def send_file(
             "file_item": {
                 "media": {
                     "encrypt_query_param": download_param,
-                    "aes_key": base64.b64encode(aes_key).decode("ascii"),
+                    "aes_key": base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii"),
                     "encrypt_type": 1,
                 },
                 "file_name": normalized_filename,

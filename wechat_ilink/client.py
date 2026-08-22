@@ -208,7 +208,7 @@ class WeChatClient:
                 "image_item": {
                     "media": {
                         "encrypt_query_param": download_param,
-                        "aes_key": base64.b64encode(aes_key).decode("ascii"),
+                        "aes_key": base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii"),
                         "encrypt_type": 1,
                     },
                     "mid_size": len(ciphertext),
@@ -249,10 +249,10 @@ class WeChatClient:
             context_token,
             {
                 "type": 4,
-                "file_item": {
-                    "media": {
-                        "encrypt_query_param": download_param,
-                        "aes_key": base64.b64encode(aes_key).decode("ascii"),
+            "file_item": {
+                "media": {
+                    "encrypt_query_param": download_param,
+                    "aes_key": base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii"),
                         "encrypt_type": 1,
                     },
                     "file_name": normalized_filename,

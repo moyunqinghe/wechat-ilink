@@ -106,6 +106,8 @@ with WeChatClient(BASE_URL, bot_token) as client:
   `.stage` 是稳定的机器可读字段;iLink 业务 API 返回的非零 `ret/errcode`
   仍抛 `WeChatApiError`,通过 `.errcode` 读取。
 - 出站流程为 `getuploadurl` → AES-128-ECB 加密 → CDN 上传 → `sendmessage`;
+  `media.aes_key` 按 iLink 线上格式传递:16 字节 key 先转为 32 字符
+  小写十六进制文本,再对该文本做标准 Base64;
   CDN 上传前校验 URL 为 HTTPS 且域名通过 `validate_wechat_host`,
   且不向 CDN 携带 bot token。CDN 上传不自动重试,是否整体重投由调用方决定。
 - v0.2.0 不支持视频、原生语音、缩略图、caption 或批量附件。

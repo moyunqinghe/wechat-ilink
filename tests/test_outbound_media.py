@@ -235,7 +235,7 @@ def test_send_image_runs_complete_protocol_and_sends_exact_payload() -> None:
             "image_item": {
                 "media": {
                     "encrypt_query_param": "download-image",
-                    "aes_key": b64encode(FIXED_AES_KEY).decode("ascii"),
+                    "aes_key": b64encode(FIXED_AES_KEY.hex().encode("ascii")).decode("ascii"),
                     "encrypt_type": 1,
                 },
                 "mid_size": len(ciphertext),
@@ -276,6 +276,9 @@ def test_send_file_uses_file_media_type_plaintext_length_and_filename() -> None:
     assert item["file_item"]["file_name"] == "report.pdf"
     assert item["file_item"]["len"] == str(len(b"file-data"))
     assert item["file_item"]["media"]["encrypt_query_param"] == "download-file"
+    assert item["file_item"]["media"]["aes_key"] == b64encode(
+        FIXED_AES_KEY.hex().encode("ascii")
+    ).decode("ascii")
 
 
 @pytest.mark.parametrize("filename", ["", "   ", 123, None])

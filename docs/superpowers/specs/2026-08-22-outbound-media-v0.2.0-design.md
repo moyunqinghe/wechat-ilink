@@ -25,7 +25,7 @@
 4. `getuploadurl` 的 `media_type` 图片为 `1`，文件为 `3`；第一版两者均传 `no_need_thumb=true`。
 5. CDN 上传是 `POST application/octet-stream`，请求体为密文。
 6. CDN 成功响应为 HTTP 200，下载参数位于大小写不敏感的 `x-encrypted-param` 响应头。
-7. 消息中 `media.aes_key` 是原始 16 字节 AES key 的标准 Base64，`encrypt_type=1`。
+7. 消息中 `media.aes_key` 是 16 字节 AES key 的 32 字符小写十六进制文本再做标准 Base64，`encrypt_type=1`。它不是原始 key 字节的 Base64。
 8. 图片 `image_item.mid_size` 是密文长度；文件 `file_item.len` 是明文长度的十进制字符串。
 9. `sendmessage` 每次只携带一个媒体 item，`message_type=2`，`message_state=2`。
 
@@ -168,7 +168,7 @@ HTTP 200 后必须读取非空 `x-encrypted-param`。其他状态或缺少响应
   "image_item": {
     "media": {
       "encrypt_query_param": "<x-encrypted-param>",
-      "aes_key": "<base64 raw 16-byte AES key>",
+      "aes_key": "<base64 of the 32-character lowercase hex key text>",
       "encrypt_type": 1
     },
     "mid_size": 12352
@@ -184,7 +184,7 @@ HTTP 200 后必须读取非空 `x-encrypted-param`。其他状态或缺少响应
   "file_item": {
     "media": {
       "encrypt_query_param": "<x-encrypted-param>",
-      "aes_key": "<base64 raw 16-byte AES key>",
+      "aes_key": "<base64 of the 32-character lowercase hex key text>",
       "encrypt_type": 1
     },
     "file_name": "report.pdf",
