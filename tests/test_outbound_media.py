@@ -177,3 +177,134 @@ def test_upload_media_to_cdn_rejects_bad_response(response, code, status) -> Non
         client._upload_media_to_cdn(CDN_URL, b"ciphertext")
     assert raised.value.code is code
     assert raised.value.status_code == status
+
+
+from base64 import b64encode
+
+from wechat_ilink import encrypt_wechat_media
+
+
+def test_send_image_runs_complete_protocol_and_sends_exact_payload() -> None:
+    calls: list[httpx.Request] = []
+    plaintext = b"image-data"
+    ciphertext = encrypt_wechat_media(plaintext, FIXED_AES_KEY)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path == "/ilink/bot/getuploadurl":
+            return httpx.Response(200, json={"upload_full_url": CDN_URL})
+        if request.url.host == "novac2c.cdn.weixin.qq.com":
+            assert request.content == ciphertext
+            return httpx.Response(200, headers={"x-encrypted-param": "download-image"})
+        if request.url.path == "/ilink/bot/sendmessage":
+            return httpx.Response(200, json={"ret": 0})
+        return httpx.Response(404)
+
+    client = WeChatClient(
+        BASE_URL,
+        "bot-token",
+        transport=httpx.MockTransport(handler),
+        random_bytes=FixedRandom(),
+    )
+    assert client.send_image(
+        "user@im.wechat",
+        "ctx",
+        plaintext,
+        client_id="image-client-id",
+    ) is None
+
+    assert [request.url.path for request in calls] == [
+        "/ilink/bot/getuploadurl",
+        "/c2c/upload",
+        "/ilink/bot/sendmessage",
+    ]
+    upload_body = json.loads(calls[0].content)
+    assert upload_body["media_type"] == 1
+    send_body = json.loads(calls[2].content)
+    assert send_body["msg"]["client_id"] == "image-client-id"
+    assert send_body["msg"]["context_token"] == "ctx"
+    assert send_body["msg"]["item_list"] == [
+        {
+            "type": 2,
+            "image_item": {
+                "media": {
+                    "encrypt_query_param": "download-image",
+                    "aes_key": b64encode(FIXED_AES_KEY).decode("ascii"),
+                    "encrypt_type": 1,
+                },
+                "mid_size": len(ciphertext),
+            },
+        }
+    ]
+
+
+def test_send_file_uses_file_media_type_plaintext_length_and_filename() -> None:
+    bodies: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/ilink/bot/getuploadurl":
+            bodies["upload"] = json.loads(request.content)
+            return httpx.Response(200, json={"upload_full_url": CDN_URL})
+        if request.url.host == "novac2c.cdn.weixin.qq.com":
+            return httpx.Response(200, headers={"x-encrypted-param": "download-file"})
+        bodies["send"] = json.loads(request.content)
+        return httpx.Response(200, json={})
+
+    client = WeChatClient(
+        BASE_URL,
+        "bot-token",
+        transport=httpx.MockTransport(handler),
+        random_bytes=FixedRandom(),
+    )
+    client.send_file(
+        "user@im.wechat",
+        "ctx",
+        b"file-data",
+        " report.pdf ",
+        client_id="file-client-id",
+    )
+
+    assert bodies["upload"]["media_type"] == 3
+    item = bodies["send"]["msg"]["item_list"][0]
+    assert item["type"] == 4
+    assert item["file_item"]["file_name"] == "report.pdf"
+    assert item["file_item"]["len"] == str(len(b"file-data"))
+    assert item["file_item"]["media"]["encrypt_query_param"] == "download-file"
+
+
+@pytest.mark.parametrize("filename", ["", "   ", 123, None])
+def test_send_file_rejects_invalid_filename_before_http(filename) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500)
+
+    client = WeChatClient(BASE_URL, transport=httpx.MockTransport(handler))
+    with pytest.raises(WeChatMediaError) as raised:
+        client.send_file("user", "ctx", b"data", filename)
+    assert raised.value.code is WeChatErrorCode.INVALID_MEDIA_INPUT
+    assert calls == 0
+
+
+def test_send_image_rejects_oversize_before_http() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500)
+
+    client = WeChatClient(BASE_URL, transport=httpx.MockTransport(handler))
+    with pytest.raises(WeChatMediaError) as raised:
+        client.send_image("user", "ctx", b"x" * (25 * 1024 * 1024 + 1))
+    assert raised.value.code is WeChatErrorCode.MEDIA_TOO_LARGE
+    assert calls == 0
+
+
+def test_send_image_rejects_wrong_random_length_before_http() -> None:
+    client = WeChatClient(BASE_URL, random_bytes=lambda size: b"short")
+    with pytest.raises(WeChatMediaError) as raised:
+        client.send_image("user", "ctx", b"image")
+    assert raised.value.code is WeChatErrorCode.MEDIA_ENCRYPTION_FAILED

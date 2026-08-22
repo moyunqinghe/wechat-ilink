@@ -14,7 +14,11 @@ from uuid import uuid4
 import httpx
 
 from .errors import WeChatApiError, WeChatErrorCode, WeChatMediaError
-from .media import MAX_CHANNEL_MEDIA_BYTES
+from .media import (
+    MAX_CHANNEL_MEDIA_BYTES,
+    _read_media_bytes,
+    encrypt_wechat_media,
+)
 from .media import download_media_url as _download_media_url
 from .security import validate_wechat_host
 
@@ -117,7 +121,13 @@ class WeChatClient:
         resp.raise_for_status()
         return dict(resp.json() or {})
 
-    def send_message(self, to_user_id: str, context_token: str, text: str, client_id: str = "") -> None:
+    def _send_item(
+        self,
+        to_user_id: str,
+        context_token: str,
+        item: dict[str, Any],
+        client_id: str = "",
+    ) -> None:
         payload = {
             "msg": {
                 "from_user_id": "",
@@ -127,7 +137,7 @@ class WeChatClient:
                 "message_type": 2,
                 "message_state": 2,
                 "context_token": context_token,
-                "item_list": [{"type": 1, "text_item": {"text": text}}],
+                "item_list": [item],
             },
             "base_info": self._base_info(),
         }
@@ -143,6 +153,107 @@ class WeChatClient:
             errcode = data.get("errcode") or data.get("ret") or 0
             if errcode:
                 raise WeChatApiError(int(errcode), str(data.get("errmsg") or ""))
+
+    def send_message(self, to_user_id: str, context_token: str, text: str, client_id: str = "") -> None:
+        self._send_item(
+            to_user_id,
+            context_token,
+            {"type": 1, "text_item": {"text": text}},
+            client_id,
+        )
+
+    def _prepare_outbound_media(self, data: object) -> tuple[bytes, bytes, str, bytes]:
+        plaintext = _read_media_bytes(data)
+        filekey_bytes = self._random_bytes(16)
+        aes_key = self._random_bytes(16)
+        if len(filekey_bytes) != 16 or len(aes_key) != 16:
+            raise WeChatMediaError(
+                WeChatErrorCode.MEDIA_ENCRYPTION_FAILED,
+                "encrypt",
+                "random source must return exactly 16 bytes",
+            )
+        ciphertext = encrypt_wechat_media(plaintext, aes_key)
+        return plaintext, ciphertext, filekey_bytes.hex(), aes_key
+
+    def send_image(
+        self,
+        to_user_id: str,
+        context_token: str,
+        data: object,
+        *,
+        client_id: str = "",
+    ) -> None:
+        plaintext, ciphertext, filekey, aes_key = self._prepare_outbound_media(data)
+        upload_url = self._get_upload_url(
+            to_user_id=to_user_id,
+            media_type=1,
+            plaintext=plaintext,
+            ciphertext_size=len(ciphertext),
+            filekey=filekey,
+            aeskey=aes_key.hex(),
+        )
+        download_param = self._upload_media_to_cdn(upload_url, ciphertext)
+        self._send_item(
+            to_user_id,
+            context_token,
+            {
+                "type": 2,
+                "image_item": {
+                    "media": {
+                        "encrypt_query_param": download_param,
+                        "aes_key": base64.b64encode(aes_key).decode("ascii"),
+                        "encrypt_type": 1,
+                    },
+                    "mid_size": len(ciphertext),
+                },
+            },
+            client_id,
+        )
+
+    def send_file(
+        self,
+        to_user_id: str,
+        context_token: str,
+        data: object,
+        filename: str,
+        *,
+        client_id: str = "",
+    ) -> None:
+        if not isinstance(filename, str) or not filename.strip():
+            raise WeChatMediaError(
+                WeChatErrorCode.INVALID_MEDIA_INPUT,
+                "read",
+                "filename must be a non-empty string",
+            )
+        # filename 仅为协议展示字段;基座不展开路径、不读取同名本地文件
+        normalized_filename = filename.strip()
+        plaintext, ciphertext, filekey, aes_key = self._prepare_outbound_media(data)
+        upload_url = self._get_upload_url(
+            to_user_id=to_user_id,
+            media_type=3,
+            plaintext=plaintext,
+            ciphertext_size=len(ciphertext),
+            filekey=filekey,
+            aeskey=aes_key.hex(),
+        )
+        download_param = self._upload_media_to_cdn(upload_url, ciphertext)
+        self._send_item(
+            to_user_id,
+            context_token,
+            {
+                "type": 4,
+                "file_item": {
+                    "media": {
+                        "encrypt_query_param": download_param,
+                        "aes_key": base64.b64encode(aes_key).decode("ascii"),
+                        "encrypt_type": 1,
+                    },
+                    "file_name": normalized_filename,
+                    "len": str(len(plaintext)),
+                },
+            },
+            client_id,
+        )
 
     def get_config(self, ilink_user_id: str, context_token: str = "") -> dict[str, Any]:
         resp = self._client.post(
