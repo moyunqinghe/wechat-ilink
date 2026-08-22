@@ -166,12 +166,19 @@ class WeChatClient:
         plaintext = _read_media_bytes(data)
         filekey_bytes = self._random_bytes(16)
         aes_key = self._random_bytes(16)
-        if len(filekey_bytes) != 16 or len(aes_key) != 16:
+        if (
+            not isinstance(filekey_bytes, (bytes, bytearray, memoryview))
+            or not isinstance(aes_key, (bytes, bytearray, memoryview))
+            or len(filekey_bytes) != 16
+            or len(aes_key) != 16
+        ):
             raise WeChatMediaError(
                 WeChatErrorCode.MEDIA_ENCRYPTION_FAILED,
                 "encrypt",
                 "random source must return exactly 16 bytes",
             )
+        filekey_bytes = bytes(filekey_bytes)
+        aes_key = bytes(aes_key)
         ciphertext = encrypt_wechat_media(plaintext, aes_key)
         return plaintext, ciphertext, filekey_bytes.hex(), aes_key
 
@@ -387,7 +394,14 @@ class WeChatClient:
                 "getuploadurl",
                 "getuploadurl response must be an object",
             )
-        errcode = int(data.get("errcode") or data.get("ret") or 0)
+        try:
+            errcode = int(data.get("errcode") or data.get("ret") or 0)
+        except (TypeError, ValueError) as exc:
+            raise WeChatMediaError(
+                WeChatErrorCode.UPLOAD_URL_INVALID_RESPONSE,
+                "getuploadurl",
+                "getuploadurl returned non-numeric ret/errcode",
+            ) from exc
         if errcode:
             raise WeChatApiError(errcode, str(data.get("errmsg") or ""))
         upload_full_url = str(data.get("upload_full_url") or "").strip()

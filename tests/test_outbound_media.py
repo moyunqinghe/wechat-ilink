@@ -97,6 +97,7 @@ def test_get_upload_url_builds_official_fallback_url() -> None:
         (httpx.Response(200, json=[]), WeChatMediaError, WeChatErrorCode.UPLOAD_URL_INVALID_RESPONSE),
         (httpx.Response(200, json={}), WeChatMediaError, WeChatErrorCode.UPLOAD_URL_INVALID_RESPONSE),
         (httpx.Response(200, json={"ret": -2, "errmsg": "bad"}), WeChatApiError, None),
+        (httpx.Response(200, json={"ret": "bad"}), WeChatMediaError, WeChatErrorCode.UPLOAD_URL_INVALID_RESPONSE),
     ],
 )
 def test_get_upload_url_rejects_error_responses(response, error_type, code) -> None:
@@ -152,7 +153,11 @@ def test_upload_media_to_cdn_rejects_untrusted_url_before_http(url: str) -> None
         calls += 1
         return httpx.Response(200, headers={"x-encrypted-param": "x"})
 
-    client = WeChatClient(BASE_URL, cdn_transport=httpx.MockTransport(handler))
+    client = WeChatClient(
+        BASE_URL,
+        transport=httpx.MockTransport(lambda request: httpx.Response(500)),
+        cdn_transport=httpx.MockTransport(handler),
+    )
     with pytest.raises(WeChatMediaError) as raised:
         client._upload_media_to_cdn(url, b"ciphertext")
     assert raised.value.code is WeChatErrorCode.UPLOAD_URL_REJECTED
@@ -171,6 +176,7 @@ def test_upload_media_to_cdn_rejects_untrusted_url_before_http(url: str) -> None
 def test_upload_media_to_cdn_rejects_bad_response(response, code, status) -> None:
     client = WeChatClient(
         BASE_URL,
+        transport=httpx.MockTransport(lambda request: httpx.Response(500)),
         cdn_transport=httpx.MockTransport(lambda request: response),
     )
     with pytest.raises(WeChatMediaError) as raised:
@@ -304,7 +310,24 @@ def test_send_image_rejects_oversize_before_http() -> None:
 
 
 def test_send_image_rejects_wrong_random_length_before_http() -> None:
-    client = WeChatClient(BASE_URL, random_bytes=lambda size: b"short")
+    client = WeChatClient(
+        BASE_URL,
+        transport=httpx.MockTransport(lambda request: httpx.Response(500)),
+        random_bytes=lambda size: b"short",
+    )
     with pytest.raises(WeChatMediaError) as raised:
         client.send_image("user", "ctx", b"image")
     assert raised.value.code is WeChatErrorCode.MEDIA_ENCRYPTION_FAILED
+
+
+def test_send_image_rejects_non_bytes_random_before_http() -> None:
+    values = iter(["a" * 16, b"b" * 16])
+    client = WeChatClient(
+        BASE_URL,
+        transport=httpx.MockTransport(lambda request: httpx.Response(500)),
+        random_bytes=lambda size: next(values),
+    )
+    with pytest.raises(WeChatMediaError) as raised:
+        client.send_image("user", "ctx", b"image")
+    assert raised.value.code is WeChatErrorCode.MEDIA_ENCRYPTION_FAILED
+    assert raised.value.stage == "encrypt"
