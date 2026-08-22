@@ -105,3 +105,75 @@ def test_get_upload_url_rejects_error_responses(response, error_type, code) -> N
         upload_url_call(client)
     if code is not None:
         assert raised.value.code is code
+
+
+def test_upload_media_to_cdn_posts_ciphertext_and_returns_param() -> None:
+    captured: dict[str, object] = {}
+
+    def business_handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("business API must not be called")
+
+    def cdn_handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, headers={"X-Encrypted-Param": "download-param"})
+
+    client = WeChatClient(
+        BASE_URL,
+        "secret-token",
+        transport=httpx.MockTransport(business_handler),
+        cdn_transport=httpx.MockTransport(cdn_handler),
+    )
+    result = client._upload_media_to_cdn(CDN_URL, b"ciphertext")
+
+    assert result == "download-param"
+    request = captured["request"]
+    assert isinstance(request, httpx.Request)
+    assert request.method == "POST"
+    assert request.content == b"ciphertext"
+    assert request.headers["Content-Type"] == "application/octet-stream"
+    assert request.headers["Content-Length"] == str(len(b"ciphertext"))
+    assert "Authorization" not in request.headers
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://novac2c.cdn.weixin.qq.com/c2c/upload",
+        "https://evil.example/upload",
+        "https://weixin.qq.com.evil.example/upload",
+        "not-a-url",
+    ],
+)
+def test_upload_media_to_cdn_rejects_untrusted_url_before_http(url: str) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, headers={"x-encrypted-param": "x"})
+
+    client = WeChatClient(BASE_URL, cdn_transport=httpx.MockTransport(handler))
+    with pytest.raises(WeChatMediaError) as raised:
+        client._upload_media_to_cdn(url, b"ciphertext")
+    assert raised.value.code is WeChatErrorCode.UPLOAD_URL_REJECTED
+    assert calls == 0
+
+
+@pytest.mark.parametrize(
+    ("response", "code", "status"),
+    [
+        (httpx.Response(403), WeChatErrorCode.CDN_UPLOAD_HTTP_ERROR, 403),
+        (httpx.Response(500), WeChatErrorCode.CDN_UPLOAD_HTTP_ERROR, 500),
+        (httpx.Response(200), WeChatErrorCode.CDN_UPLOAD_INVALID_RESPONSE, None),
+        (httpx.Response(200, headers={"x-encrypted-param": " "}), WeChatErrorCode.CDN_UPLOAD_INVALID_RESPONSE, None),
+    ],
+)
+def test_upload_media_to_cdn_rejects_bad_response(response, code, status) -> None:
+    client = WeChatClient(
+        BASE_URL,
+        cdn_transport=httpx.MockTransport(lambda request: response),
+    )
+    with pytest.raises(WeChatMediaError) as raised:
+        client._upload_media_to_cdn(CDN_URL, b"ciphertext")
+    assert raised.value.code is code
+    assert raised.value.status_code == status

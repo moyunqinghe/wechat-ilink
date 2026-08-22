@@ -8,7 +8,7 @@ import os
 import time
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from uuid import uuid4
 
 import httpx
@@ -16,6 +16,7 @@ import httpx
 from .errors import WeChatApiError, WeChatErrorCode, WeChatMediaError
 from .media import MAX_CHANNEL_MEDIA_BYTES
 from .media import download_media_url as _download_media_url
+from .security import validate_wechat_host
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +290,46 @@ class WeChatClient:
             "getuploadurl",
             "response missing upload_full_url and upload_param",
         )
+
+    def _upload_media_to_cdn(self, upload_url: str, ciphertext: bytes) -> str:
+        try:
+            parsed = urlparse(upload_url)
+            trusted = parsed.scheme == "https" and validate_wechat_host(parsed.hostname or "")
+        except ValueError:
+            trusted = False
+        if not trusted:
+            raise WeChatMediaError(
+                WeChatErrorCode.UPLOAD_URL_REJECTED,
+                "cdn_upload",
+                "CDN upload URL is not trusted",
+            )
+        try:
+            response = self._cdn_client.post(
+                upload_url,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": str(len(ciphertext)),
+                },
+                content=ciphertext,
+                timeout=30.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            raise WeChatMediaError(
+                WeChatErrorCode.CDN_UPLOAD_HTTP_ERROR,
+                "cdn_upload",
+                "CDN upload failed",
+                status_code=status,
+            ) from exc
+        encrypted_param = response.headers.get("x-encrypted-param", "").strip()
+        if not encrypted_param:
+            raise WeChatMediaError(
+                WeChatErrorCode.CDN_UPLOAD_INVALID_RESPONSE,
+                "cdn_upload",
+                "CDN response missing x-encrypted-param",
+            )
+        return encrypted_param
 
     def close(self) -> None:
         if self._cdn_client is not self._client:
