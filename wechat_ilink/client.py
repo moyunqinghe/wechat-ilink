@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlencode
 from uuid import uuid4
 
 import httpx
 
-from .errors import WeChatApiError
+from .errors import WeChatApiError, WeChatErrorCode, WeChatMediaError
 from .media import MAX_CHANNEL_MEDIA_BYTES
 from .media import download_media_url as _download_media_url
 
@@ -20,6 +23,12 @@ CHANNEL_VERSION = "1.0.0"
 GETUPDATES_TIMEOUT_SECONDS = 40.0
 # errcode -14:会话疑似过期(token 被 iLink 拒收);调用方应走恢复/重新扫码流程
 SESSION_EXPIRED_ERRCODE = -14
+WECHAT_CDN_UPLOAD_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c/upload"
+
+
+def _build_cdn_upload_url(upload_param: str, filekey: str) -> str:
+    """Official fallback CDN URL assembly from upload_param + filekey."""
+    return f"{WECHAT_CDN_UPLOAD_BASE_URL}?{urlencode({'encrypted_query_param': upload_param, 'filekey': filekey})}"
 
 
 def random_wechat_uin() -> str:
@@ -37,10 +46,18 @@ class WeChatClient:
         bot_token: str = "",
         *,
         transport: httpx.BaseTransport | None = None,
+        cdn_transport: httpx.BaseTransport | None = None,
+        random_bytes: Callable[[int], bytes] = os.urandom,
     ):
         self.base_url = base_url.rstrip("/")
         self.bot_token = bot_token
+        self._random_bytes = random_bytes
         self._client = httpx.Client(transport=transport)
+        self._cdn_client = (
+            self._client
+            if cdn_transport is None
+            else httpx.Client(transport=cdn_transport)
+        )
 
     def _business_headers(self) -> dict[str, str]:
         return {
@@ -208,7 +225,74 @@ class WeChatClient:
         """Download the CDN URL supplied by an iLink image item."""
         return _download_media_url(full_url, aes_key=aes_key, expected_size=expected_size)
 
+    def _get_upload_url(
+        self,
+        *,
+        to_user_id: str,
+        media_type: int,
+        plaintext: bytes,
+        ciphertext_size: int,
+        filekey: str,
+        aeskey: str,
+    ) -> str:
+        try:
+            response = self._client.post(
+                f"{self.base_url}/ilink/bot/getuploadurl",
+                headers=self._business_headers(),
+                json={
+                    "filekey": filekey,
+                    "media_type": media_type,
+                    "to_user_id": to_user_id,
+                    "rawsize": len(plaintext),
+                    "rawfilemd5": hashlib.md5(plaintext).hexdigest(),
+                    "filesize": ciphertext_size,
+                    "no_need_thumb": True,
+                    "aeskey": aeskey,
+                    "base_info": self._base_info(),
+                },
+                timeout=20.0,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            raise WeChatMediaError(
+                WeChatErrorCode.UPLOAD_URL_HTTP_ERROR,
+                "getuploadurl",
+                "getuploadurl request failed",
+                status_code=status,
+            ) from exc
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise WeChatMediaError(
+                WeChatErrorCode.UPLOAD_URL_INVALID_RESPONSE,
+                "getuploadurl",
+                "getuploadurl returned invalid JSON",
+            ) from exc
+        if not isinstance(data, dict):
+            raise WeChatMediaError(
+                WeChatErrorCode.UPLOAD_URL_INVALID_RESPONSE,
+                "getuploadurl",
+                "getuploadurl response must be an object",
+            )
+        errcode = int(data.get("errcode") or data.get("ret") or 0)
+        if errcode:
+            raise WeChatApiError(errcode, str(data.get("errmsg") or ""))
+        upload_full_url = str(data.get("upload_full_url") or "").strip()
+        if upload_full_url:
+            return upload_full_url
+        upload_param = str(data.get("upload_param") or "").strip()
+        if upload_param:
+            return _build_cdn_upload_url(upload_param, filekey)
+        raise WeChatMediaError(
+            WeChatErrorCode.UPLOAD_URL_INVALID_RESPONSE,
+            "getuploadurl",
+            "response missing upload_full_url and upload_param",
+        )
+
     def close(self) -> None:
+        if self._cdn_client is not self._client:
+            self._cdn_client.close()
         self._client.close()
 
     def __enter__(self) -> WeChatClient:

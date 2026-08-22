@@ -218,3 +218,11 @@ def test_session_expired_errcode_constant() -> None:
     from wechat_ilink import SESSION_EXPIRED_ERRCODE
 
     assert SESSION_EXPIRED_ERRCODE == -14
+
+
+def test_client_accepts_separate_cdn_mock_transport() -> None:
+    business = httpx.MockTransport(lambda request: httpx.Response(200, json={}))
+    cdn = httpx.MockTransport(lambda request: httpx.Response(200))
+    client = WeChatClient(BASE_URL, "token", transport=business, cdn_transport=cdn)
+    assert client._cdn_client is not client._client
+    client.close()
