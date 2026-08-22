@@ -15,7 +15,7 @@ import httpx
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from .errors import WeChatApiError
+from .errors import WeChatApiError, WeChatErrorCode, WeChatMediaError
 from .security import validate_wechat_host
 
 try:
@@ -37,6 +37,43 @@ def ensure_channel_media_size(size: int, *, encrypted: bool = False) -> None:
     limit = MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES if encrypted else MAX_CHANNEL_MEDIA_BYTES
     if size > limit:
         raise ValueError(f"渠道附件超过大小上限: size={size} limit={limit}")
+
+
+def aes_ecb_padded_size(plaintext_size: int) -> int:
+    """Ciphertext size for AES-128-ECB with PKCS#7 (always one full padding block)."""
+    if plaintext_size < 0:
+        raise WeChatMediaError(
+            WeChatErrorCode.INVALID_MEDIA_INPUT,
+            "encrypt",
+            "plaintext size must be non-negative",
+        )
+    return ((plaintext_size // 16) + 1) * 16
+
+
+def encrypt_wechat_media(data: bytes, key: bytes) -> bytes:
+    """Encrypt outbound media with the iLink CDN wire format: AES-128-ECB + PKCS#7.
+
+    AES-ECB is mandated by the third-party iLink CDN payload format; it is not
+    reusable storage crypto. The key must be exactly 16 bytes.
+    """
+    if len(key) != 16:
+        raise WeChatMediaError(
+            WeChatErrorCode.MEDIA_ENCRYPTION_FAILED,
+            "encrypt",
+            "AES-128 key must be exactly 16 bytes",
+        )
+    try:
+        padder = padding.PKCS7(algorithms.AES.block_size).padder()
+        padded = padder.update(data) + padder.finalize()
+        ecb_mode = modes.ECB()  # lgtm[py/weak-cryptographic-algorithm]
+        encryptor = Cipher(algorithms.AES(key), ecb_mode).encryptor()
+        return encryptor.update(padded) + encryptor.finalize()
+    except (TypeError, ValueError) as exc:
+        raise WeChatMediaError(
+            WeChatErrorCode.MEDIA_ENCRYPTION_FAILED,
+            "encrypt",
+            "media encryption failed",
+        ) from exc
 
 
 def decrypt_wechat_media(data: bytes, aes_key: str, *, expected_size: int = 0) -> bytes:

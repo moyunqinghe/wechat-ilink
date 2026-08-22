@@ -8,12 +8,14 @@ from .client import (
     random_wechat_uin,
 )
 from .crypto import decrypt_secret, derive_fernet_key, encrypt_secret
-from .errors import WeChatApiError
+from .errors import WeChatApiError, WeChatErrorCode, WeChatMediaError
 from .media import (
     MAX_CHANNEL_MEDIA_BYTES,
     MAX_ENCRYPTED_CHANNEL_MEDIA_BYTES,
+    aes_ecb_padded_size,
     decrypt_wechat_media,
     download_media_url,
+    encrypt_wechat_media,
     ensure_channel_media_size,
 )
 from .normalize import (
@@ -39,11 +41,15 @@ __all__ = [
     "InboundMessage",
     "WeChatApiError",
     "WeChatClient",
+    "WeChatErrorCode",
+    "WeChatMediaError",
+    "aes_ecb_padded_size",
     "decrypt_secret",
     "decrypt_wechat_media",
     "derive_fernet_key",
     "download_media_url",
     "encrypt_secret",
+    "encrypt_wechat_media",
     "ensure_channel_media_size",
     "extract_message_attachments",
     "extract_message_text",
